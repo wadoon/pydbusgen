@@ -1,0 +1,126 @@
+#!/usr/bin/python
+
+from  subprocess import Popen, PIPE
+import sys, os, optparse
+
+import mako.exceptions as exceptions
+from mako.template import Template 
+from mako.lookup import TemplateLookup
+from mako.runtime import Context
+
+
+from pyparsing import Literal, srange, Suppress, ZeroOrMore, Word, ParseException
+
+template ="dbustpl.py"
+
+
+__cmd_template="qdbus %s %s"
+
+class LineProcessor(object):
+    def __init__(self):
+        allchars=srange("[a-zA-Z0-9_$.]")
+
+        METHOD = Literal('method')
+        SIGNAL = Literal('signal')
+        
+        LPAREN =Suppress(Literal('('))
+        RPAREN =Suppress(Literal(')'))
+
+        text = Word(allchars)
+        
+        arg = text + text
+        
+        argslist = ZeroOrMore( arg + Suppress( ZeroOrMore( ',' ))
+                       ).setResultsName("argslist")
+
+        self.line_expr = (
+            (METHOD ^ SIGNAL).setResultsName('item_type') +
+            text.setResultsName("return_type") +
+            text.setResultsName("method_name")  +
+            LPAREN + argslist + RPAREN
+            )
+
+    def __call__(self, line):
+        try:
+            d = self.line_expr.parseString(line).asDict()
+            d['doc']=line
+            
+            d['name'] = d['method_name'].split('.')[-1]
+            
+            try:
+                d['args'] = ', '.join(d['argslist'][1::2])
+            except KeyError, e:
+                d['args'] = ''
+
+#            print d
+            return d
+            
+        except ParseException, e:
+            print >> sys.stderr, line
+            print >> sys.stderr, ' ' * e.loc + '^'
+            print >> sys.stderr, str(e)
+            
+        return None
+    
+        
+__process_line= LineProcessor()
+    
+
+if __name__ =="__main__":
+    opts= optparse.OptionParser()
+    opts.add_option('-o', '--output', help="output file",
+                   dest="ofilenm", default=None)
+
+    opts.add_option('-s', '--service', help="output file",
+                   dest="service", default=None)
+
+    opts.add_option('-i', '--interface', help="output file",
+                   dest="interface", default=None)
+    
+
+    opts.add_option('-p', '--path', help="output file",
+                   dest="path", default=None)
+
+
+    opts.add_option('-c', '--cmd', help="output file",
+                   dest="cmd", default=None)
+
+    opts.add_option('', '--proxyname', help="name of the dbusproxy variable",
+                   dest="proxyName", default="_proxy")
+
+    opts.add_option('-t', '--template', help="name of the template file",
+                   dest="templatenm", default="dbus.tpl.py")
+
+
+
+    opts, args = opts.parse_args()
+
+    items = []
+    
+
+    if opts.cmd:
+        command = opts.cmd
+    else:
+        command = __cmd_template % (
+            opts.service, opts.path)
+
+    print("Executing: %s" % command)
+
+    p = Popen(command, shell=True,
+                     stdout=PIPE, close_fds=True )
+
+    for line in p.stdout:
+#        print(line)
+        items.append( __process_line(line.strip()) )                     
+
+    p.terminate()
+
+    t = Template(filename=opts.templatenm)
+
+    output = t.render(items=items, serviceName= opts.service,
+                      path=opts.path, proxy_name=opts.proxyName,
+                      interface=opts.interface)
+
+    with open(opts.ofilenm, 'w') as o:
+        o.write(output)
+
